@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Real-Time Speech Processor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center p-6">
+  <h1 class="text-3xl font-semibold mb-6">Real-Time Speech Processor</h1>
+
+  <div class="bg-white rounded-lg shadow p-6 w-full max-w-xl">
+    <button id="recordBtn" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition flex items-center gap-2">
+      <i class="fas fa-microphone"></i> Start Recording
+    </button>
+
+    <div class="mt-6 space-y-4">
+      <div>
+        <h2 class="text-lg font-semibold mb-1">Raw Transcription:</h2>
+        <p id="rawText" class="p-3 bg-gray-50 rounded border border-gray-300 min-h-[3rem]"></p>
+      </div>
+      <div>
+        <h2 class="text-lg font-semibold mb-1">Corrected Transcription:</h2>
+        <p id="correctedText" class="p-3 bg-gray-50 rounded border border-gray-300 min-h-[3rem]"></p>
+      </div>
+      <div>
+        <h2 class="text-lg font-semibold mb-1">Audio Playback:</h2>
+        <audio id="audioPlayback" controls class="w-full"></audio>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const recordBtn = document.getElementById('recordBtn');
+    const rawTextEl = document.getElementById('rawText');
+    const correctedTextEl = document.getElementById('correctedText');
+    const audioPlayback = document.getElementById('audioPlayback');
+
+    let mediaRecorder;
+    let audioChunks = [];
+
+    recordBtn.addEventListener('click', async () => {
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        recordBtn.disabled = true;
+        recordBtn.textContent = 'Processing...';
+      } else {
+        audioChunks = [];
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        mediaRecorder.start();
+        recordBtn.textContent = 'Stop Recording';
+
+        mediaRecorder.addEventListener('dataavailable', event => {
+          audioChunks.push(event.data);
+        });
+
+        mediaRecorder.addEventListener('stop', async () => {
+          const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+          const audioFile = new File([audioBlob], 'recording.wav', { type: 'audio/wav' });
+
+          // Send audio to backend for transcription
+          const formData = new FormData();
+          formData.append('audio', audioFile);
+
+          try {
+            const transcribeRes = await fetch('/api/transcribe', {
+              method: 'POST',
+              body: formData
+            });
+            const transcribeData = await transcribeRes.json();
+            rawTextEl.textContent = transcribeData.transcription || '';
+
+            // Send raw transcription for correction
+            const correctRes = await fetch('/api/correct', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: transcribeData.transcription || '' })
+            });
+            const correctData = await correctRes.json();
+            correctedTextEl.textContent = correctData.corrected_text || '';
+
+            // Request text-to-speech audio
+            const speakRes = await fetch('/api/speak', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: correctData.corrected_text || '' })
+            });
+            if (speakRes.ok) {
+              const audioBlob = await speakRes.blob();
+              const audioUrl = URL.createObjectURL(audioBlob);
+              audioPlayback.src = audioUrl;
+              audioPlayback.play();
+            } else {
+              audioPlayback.src = '';
+            }
+          } catch (error) {
+            rawTextEl.textContent = 'Error processing audio.';
+            correctedTextEl.textContent = '';
+            audioPlayback.src = '';
+          } finally {
+            recordBtn.disabled = false;
+            recordBtn.textContent = 'Start Recording';
+          }
+        });
+      }
+    });
+  </script>
+</body>
+</html>

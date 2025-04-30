@@ -4,11 +4,9 @@ import torch
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor, BertTokenizer, BertModel, pipeline
 from gtts import gTTS
 import os
-import platform
 import tempfile
 from flask import Flask, request, jsonify, send_file
 import io
-import base64
 
 class RealTimeSpeechProcessor:
     def __init__(self):
@@ -20,45 +18,28 @@ class RealTimeSpeechProcessor:
         self.processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
         self.asr_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-base-960h").to(self.device)
         
-        # Text Correction (BERT + LLM)
-        self.bert_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        self.bert_model = BertModel.from_pretrained('bert-base-uncased').to(self.device)
-        self.llm = pipeline("text-generation", 
-                            model="gpt2",
-                            device=0 if self.device == "cuda" else -1)
-        
+        # Text Correction (GPT-2)
+        self.llm = pipeline("text-generation", model="gpt2", device=0 if self.device == "cuda" else -1)
+
         # Audio Config
         self.CHUNK = 1024
         self.FORMAT = pyaudio.paInt16
         self.CHANNELS = 1
         self.RATE = 16000
 
-    def list_input_devices(self):
-        """List available audio input devices."""
-        p = pyaudio.PyAudio()
-        print("\nAvailable audio input devices:")
-        for i in range(p.get_device_count()):
-            dev = p.get_device_info_by_index(i)
-            if dev['maxInputChannels'] > 0:
-                print(f"{i}: {dev['name']}")
-        p.terminate()
-
-    def capture_audio(self, duration=5, input_device_index=None):
-        """Capture audio with PyAudio with error handling."""
+    def capture_audio(self, duration=5):
+        """Capture audio with PyAudio."""
         p = pyaudio.PyAudio()
         stream = None
         frames = []
         
         try:
             # Open stream
-            stream = p.open(
-                format=self.FORMAT,
-                channels=self.CHANNELS,
-                rate=self.RATE,
-                input=True,
-                frames_per_buffer=self.CHUNK,
-                input_device_index=input_device_index
-            )
+            stream = p.open(format=self.FORMAT,
+                            channels=self.CHANNELS,
+                            rate=self.RATE,
+                            input=True,
+                            frames_per_buffer=self.CHUNK)
             
             print(f"\nRecording for {duration} seconds...")
             for _ in range(0, int(self.RATE / self.CHUNK * duration)):
@@ -78,7 +59,7 @@ class RealTimeSpeechProcessor:
             p.terminate()
 
     def speech_to_text(self, audio):
-        """Convert speech to text with Wav2Vec2."""
+        """Convert speech to text using Wav2Vec2."""
         if audio is None or len(audio) == 0:
             return ""
         
@@ -90,30 +71,26 @@ class RealTimeSpeechProcessor:
             return transcription.lower().strip()
 
     def correct_text(self, text):
-        """Correct text using LLM with refined prompt."""
+        """Correct text using GPT-2."""
         if not text.strip():
             return ""
         
         prompt = f"Please correct the following transcription for grammar and clarity:\n\"{text}\"\nCorrected version:"
         try:
             corrected = self.llm(prompt, max_length=100, num_return_sequences=1)[0]['generated_text']
-            # Extract the corrected part after the prompt
             corrected_text = corrected.split("Corrected version:")[-1].strip()
-            # Sometimes the model may continue with extra text, so split by newline or period
-            corrected_text = corrected_text.split('\n')[0].strip()
             return corrected_text
         except Exception as e:
             print(f"LLM error: {str(e)}")
             return text
 
     def text_to_speech(self, text):
-        """Convert text to speech and play it cross-platform."""
+        """Convert text to speech using gTTS."""
         if not text.strip():
             return None
         
         try:
             tts = gTTS(text=text, lang='en')
-            # Use a temporary file to save the audio
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
                 tts.save(fp.name)
                 fp.seek(0)
@@ -133,7 +110,6 @@ def transcribe():
         return jsonify({'error': 'No audio file provided'}), 400
     audio_file = request.files['audio']
     audio_bytes = audio_file.read()
-    # Convert bytes to numpy array
     audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
     transcription = processor.speech_to_text(audio_np)
     return jsonify({'transcription': transcription})
